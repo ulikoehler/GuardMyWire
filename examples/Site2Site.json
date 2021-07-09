@@ -1,0 +1,28 @@
+{
+    "rules": {
+        "Server": {
+            "connect_to": ["*"],
+            "keepalive": 60
+        }
+    },
+    "peers": [
+        {
+            "name": "office1.mydomain.org",
+            "endpoint": "my.dyndns.org:19628",
+            "provides_routes": ["192.168.100.0/24"],
+            "addresses": [
+                "10.82.85.1/24"
+            ],
+            "type": "Server",
+            "interface_name": "wg0"
+        }, {
+            "name": "office2.mydomain.org",
+            "provides_routes": ["192.168.200.0/24"],
+            "addresses": [
+                "10.82.85.2/24"
+            ],
+            "type": "Server",
+            "interface_name": "wg0"
+        }
+    ]
+}
