@@ -260,10 +260,10 @@ class WireguardConfigurator(object):
                 # Ignore self
                 if other_peer == me:
                     continue
-                # Check if we should connect to the peer
+                # Check if we should connect to the peer or the peer should connect to us
                 # For example, mobile phones should not connect to other mobile phones
                 # in order to keep the config small
-                if not should_connect_to(self.rules, me_type, other_peer["type"]):
+                if not (should_connect_to(self.rules, me_type, other_peer["type"]) or should_connect_to(self.rules, other_peer["type"], me_type)):
                     continue
                 # 
                 other_peer_name = other_peer["name"]
