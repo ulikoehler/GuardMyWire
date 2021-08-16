@@ -11,7 +11,7 @@ python3 guardmywire.py my-config.json
 ```
 
 This will generate a `my-config` directory containing:
-* A `config` directory containing `wg-quick` config files (the "normal" WireGuard config files - also for the Windows client
-* A `keys` directory containing private, public and pre-shared keys for all the peers
-* A `mikrotik` directory containing files with MikroTik terminal commands to setup the interface. RouterOS v7 required (v6 does not support Wireguard!)
-* [WIP] A `mobile` directory with mobile QR codes
+* A `config` subdirectory containing `wg-quick` config files (the "normal" WireGuard config files - also for the Windows client
+* A `keys` subdirectory containing private, public and pre-shared keys for all the peers
+* A `mikrotik` subdirectory containing files with MikroTik terminal commands to setup the interface. RouterOS v7 required (v6 does not support Wireguard!)
+* A `mobile` subdirectory with mobile QR codes in both PNG and SVG formal

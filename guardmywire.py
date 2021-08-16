@@ -176,6 +176,7 @@ class WireguardConfigurator(object):
         self.keys_dir = os.path.join(self.config_name, "keys")
         self.config_dir = os.path.join(self.config_name, "config")
         self.mikrotik_dir = os.path.join(self.config_name, "mikrotik")
+        self.mobile_dir = os.path.join(self.config_name, "mobile")
 
     def generate_mikrotik_config(self, config_info: ConfigInfo):
         """Generate classical wireguard config"""
@@ -237,11 +238,26 @@ class WireguardConfigurator(object):
             logger.msg("Exporting config file for", peer=me.config['name'])
             outfile.write(config)
 
+    def generate_mobile_qr(self, config_info: ConfigInfo):
+        # We use qrencode to create the QR code from the normal WireGuard .conf
+        config_filename = os.path.join(self.config_dir, f"{config_info.me.config['name']}.conf")
+        png_filename = os.path.join(self.mobile_dir, f"{config_info.me.config['name']}.png")
+        svg_filename = os.path.join(self.mobile_dir, f"{config_info.me.config['name']}.svg")
+        logger.info("Exporting mobile QR code for", peer=config_info.me.config['name'], png=png_filename)
+        try:
+            # -d is DPI of the generated PNG
+            subprocess.check_output(["qrencode", "-r", config_filename, "-o", png_filename, "-d", f"{72*4}"])
+            subprocess.check_output(["qrencode", "-r", config_filename, "-o", svg_filename, "-d", f"{72*4}", "-t", "svg"])
+        except FileNotFoundError as ex:
+            logger.error("Could not find qrencode executable", ex=ex)
+
+
     def generate_configs(self):
         # Read or generate keys for peers
         os.makedirs(self.keys_dir, exist_ok=True)
         os.makedirs(self.config_dir, exist_ok=True)
         os.makedirs(self.mikrotik_dir, exist_ok=True)
+        os.makedirs(self.mobile_dir, exist_ok=True)
         peer_keyset = generate_or_load_peer_keys(self.config_name, self.peers)
 
         # Iterate peer for which we will export config
@@ -304,6 +320,7 @@ if __name__ == "__main__":
     for config in configs:
         wg.generate_wg_config(config)
         wg.generate_mikrotik_config(config)
+        wg.generate_mobile_qr(config)
 
     if args.qr:
         subprocess.Popen(f"qrencode -t ansiutf8 < config/{args.qr}.conf", shell=True)
