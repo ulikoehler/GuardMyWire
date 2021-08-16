@@ -7,7 +7,9 @@ Install the required dependencies using
 ```sh
 pip3 install -r requirements.txt
 ```
-and just run the script in place
+and just run the script in place.
+
+**Note that GuardMyWire uses the `wg` executable to generate Wireguard keys and `qrencode`. So it requires `wg` to work at all and `qrencode` to generate mobile QR codes!**
 
 ## Howto use
 
