@@ -129,7 +129,31 @@ def generate_or_load_peer_keys(config_name, peers):
 def get_keepalive(rules, type):
     return rules[type].get("keepalive", 30)
 
+def is_reachable(peer):
+    """
+    Return true if the peer has an endpoint i.e.
+    it is reachable from the outside.
+
+    In other words, returns false for dynamic peers
+    """
+    return "endpoint" in peer
+
+def is_any_reachable(peer1, peer2):
+    """
+    Return true if peer1 and/or peer2 is reachable,
+    i.e. if peer and/or peer2 has an endpoint.
+
+    If this returns False, it means that these peers
+    can not reach each other because they don't know their addresses
+    and hence can only communicate via routing.
+    """
+    return is_reachable(peer1) or is_reachable(peer2)
+
 def should_connect_to(rules, our_type, peer_type):
+    """
+    Return true if a peer of type our_type should connect to
+    based on the config connection rul
+    """
     rule = rules[our_type].get("connect_to", ["*"])
     return ("*" in rule) or (peer_type in rule)
 
@@ -281,6 +305,10 @@ class WireguardConfigurator(object):
                 # in order to keep the config small
                 if not (should_connect_to(self.rules, me_type, other_peer["type"]) or should_connect_to(self.rules, other_peer["type"], me_type)):
                     continue
+                # Also, we require that at least one of the peers is reachable. Otherwise, it doesn't make sense to list
+                # the peer's key and traffic needs to be routed.
+                if not is_any_reachable(me, other_peer):
+                    continue
                 # 
                 other_peer_name = other_peer["name"]
                 other_peer_keys = peer_keyset[other_peer_name]
@@ -288,8 +316,7 @@ class WireguardConfigurator(object):
                 # Compute allowed IPs
                 #
                 allowed_ips = other_peer.get('provides_routes', [])
-                # Add address route
-                #
+                # Add route to peer's address
                 for address in other_peer["addresses"]:
                     addr_only = address.rpartition("/")[0]
                     if is_ipv6(addr_only):
