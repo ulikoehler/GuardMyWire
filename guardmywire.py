@@ -88,7 +88,7 @@ def generate_mikrotik_interface_config(name, private_key, addresses, interface_n
         cfg += f"/ip address add address={address} interface={interface_name} network={network}\n"
     return cfg
 
-def generate_mikrotik_peer_config(name, public_key, preshared_key, allowed_ips, interface_name, endpoint=None, keepalive=60):
+def generate_mikrotik_peer_config(name, public_key, preshared_key, allowed_ips, interface_name, endpoint=None, keepalive=60, provides_routes=[], addresses=[]):
     peerConfig = f"""/interface wireguard peers add interface={interface_name} allowed-address={','.join(allowed_ips)} public-key=\"{public_key}\" comment=\"{name}\""""
     if endpoint is not None:
         endpoint_address, _, endpoint_port = endpoint.rpartition(":")
@@ -97,6 +97,10 @@ def generate_mikrotik_peer_config(name, public_key, preshared_key, allowed_ips, 
         peerConfig += f" persistent-keepalive={keepalive}"
     if preshared_key is not None:
         peerConfig += f" preshared-key=\"{preshared_key}\""
+    # Need to add routes manually !
+    peer_addr = addresses[0].partition('/')[0] # 10.1.2.3/24 => 10.1.2.3 -- always use first address
+    for route in provides_routes:
+        peerConfig += f"""\n/ip route add comment="{interface_name} peer {name}" dst-address="{route}" gateway="{peer_addr}" """
     return peerConfig
 
 def generate_peer_config(name, pubkey, preshared_key, allowed_ips=[], endpoint=None, keepalive=10):
@@ -174,6 +178,8 @@ class RemotePeerConfig(NamedTuple):
     """Configuration for another peer to connect to (or that connects to us)"""
     name: str
     endpoint: str
+    provides_routes: List[str]
+    addresses: List[str]
     allowed_ips: List[str]
     use_psk: bool
     keys: KeySet
@@ -225,7 +231,9 @@ class WireguardConfigurator(object):
                 interface_name=interface_name,
                 preshared_key=peer.keys.psk if peer.use_psk == True else None,
                 public_key=peer.keys.public_key, allowed_ips=peer.allowed_ips,
-                endpoint=peer.endpoint, keepalive=keepalive
+                endpoint=peer.endpoint, keepalive=keepalive,
+                provides_routes=peer.provides_routes,
+                addresses=peer.addresses
             )
             config = config.strip() + "\n"
 
@@ -315,7 +323,7 @@ class WireguardConfigurator(object):
                 #
                 # Compute allowed IPs
                 #
-                allowed_ips = other_peer.get('provides_routes', [])
+                allowed_ips = list(other_peer.get('provides_routes', []))
                 # Add route to peer's address
                 for address in other_peer["addresses"]:
                     addr_only = address.rpartition("/")[0]
@@ -326,11 +334,14 @@ class WireguardConfigurator(object):
                 allowed_ips = sorted(set(allowed_ips))
 
                 me_other_peers.append(RemotePeerConfig(
-                    name=other_peer.get("name"),
-                    endpoint=other_peer.get("endpoint"),
-                    use_psk=other_peer.get("use_psk", False) == True,
-                    allowed_ips=allowed_ips,
-                    keys=other_peer_keys)
+                        name=other_peer.get("name"),
+                        endpoint=other_peer.get("endpoint"),
+                        use_psk=other_peer.get("use_psk", False) == True,
+                        allowed_ips=allowed_ips,
+                        keys=other_peer_keys,
+                        provides_routes=other_peer.get("provides_routes", []),
+                        addresses=other_peer.get("addresses", [])
+                    )
                 )
             # Processing for current peer is finished
             yield ConfigInfo(me_peer, peers=me_other_peers)
