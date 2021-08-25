@@ -323,7 +323,7 @@ class WireguardConfigurator(object):
                 #
                 # Compute allowed IPs
                 #
-                allowed_ips = list(other_peer.get('provides_routes', []))
+                allowed_ips = list(other_peer.get('provides_routes', [])) # list(): copy list, instead we would modify the routes
                 # Add route to peer's address
                 for address in other_peer["addresses"]:
                     addr_only = address.rpartition("/")[0]
