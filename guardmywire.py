@@ -100,7 +100,8 @@ def generate_mikrotik_peer_config(name, public_key, preshared_key, allowed_ips, 
     # Need to add routes manually !
     peer_addr = addresses[0].partition('/')[0] # 10.1.2.3/24 => 10.1.2.3 -- always use first address
     for route in provides_routes:
-        peerConfig += f"""\n/ip route add comment="{interface_name} peer {name}" dst-address="{route}" gateway="{peer_addr}" """
+        # We removed comment="{interface_name} peer {name}" because it generates too much clutter
+        peerConfig += f"""\n/ip route add check-gateway="ping" dst-address="{route}" gateway="{peer_addr}" """
     return peerConfig
 
 def generate_peer_config(name, pubkey, preshared_key, allowed_ips=[], endpoint=None, keepalive=10):
