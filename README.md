@@ -1,5 +1,5 @@
 # GuardMyWire
-Generate wireguard configs for Linux and MikroTik devices
+Generate wireguard configs for Linux (wg-quick), OpenWRT and MikroTik devices
 
 ## Installation
 
