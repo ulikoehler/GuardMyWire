@@ -88,6 +88,18 @@ def generate_mikrotik_interface_config(name, private_key, addresses, interface_n
         cfg += f"/ip address add address={address} interface={interface_name} network={network}\n"
     return cfg
 
+def generate_openwrt_interface_config(name, private_key, addresses, interface_name, listen_port=None):
+    if interface_name is None:
+        interface_name = name
+    cfg = f"""config interface '{interface_name}'
+        option proto 'wireguard'
+        option private_key '{private_key}'\n"""
+    for address in addresses:
+        cfg += f"        list addresses '{address}'\n"
+    if listen_port is not None:
+        cfg += f"        option listen_port '{listen_port}'\n"
+    return cfg + '\n'
+
 def generate_mikrotik_peer_config(name, public_key, preshared_key, allowed_ips, interface_name, endpoint=None, keepalive=60, provides_routes=[], addresses=[]):
     peerConfig = f"""/interface wireguard peers add interface={interface_name} allowed-address={','.join(allowed_ips)} public-key=\"{public_key}\" comment=\"{name}\""""
     if endpoint is not None:
@@ -103,6 +115,21 @@ def generate_mikrotik_peer_config(name, public_key, preshared_key, allowed_ips, 
         # We removed comment="{interface_name} peer {name}" because it generates too much clutter
         peerConfig += f"""\n/ip route add check-gateway="ping" dst-address="{route}" gateway="{peer_addr}" """
     return peerConfig
+
+def generate_openwrt_peer_config(name, public_key, preshared_key, allowed_ips, interface_name, endpoint=None, keepalive=60, provides_routes=[], addresses=[]):
+    peerConfig = f"""config wireguard_{interface_name}
+        option description '{name}'
+        option public_key '{public_key}'
+        option persistent_keepalive '{keepalive}'
+        option route_allowed_ips '1'\n"""
+    if endpoint is not None:
+        endpoint_address, _, endpoint_port = endpoint.rpartition(":")
+        peerConfig += f"        option endpoint_host '{endpoint_address}'\n"
+        peerConfig += f"        option endpoint_port '{endpoint_port}'\n"
+    for allowed_ip in allowed_ips:
+        peerConfig += f"        list allowed_ips '{allowed_ip}'\n"
+    return peerConfig + "\n"
+
 
 def generate_peer_config(name, pubkey, preshared_key, allowed_ips=[], endpoint=None, keepalive=10):
     peerConfig = f"""[Peer]
@@ -207,6 +234,7 @@ class WireguardConfigurator(object):
         self.keys_dir = os.path.join(self.config_name, "keys")
         self.config_dir = os.path.join(self.config_name, "config")
         self.mikrotik_dir = os.path.join(self.config_name, "mikrotik")
+        self.openwrt_dir = os.path.join(self.config_name, "openwrt")
         self.mobile_dir = os.path.join(self.config_name, "mobile")
 
     def generate_mikrotik_config(self, config_info: ConfigInfo):
@@ -242,6 +270,41 @@ class WireguardConfigurator(object):
         # Write config to file
         with open(os.path.join(self.mikrotik_dir, f"{me.config['name']}.mik"), "w") as outfile:
             logger.msg("Exporting MikroTik commands for", peer=me.config['name'])
+            outfile.write(config)
+
+    def generate_openwrt_config(self, config_info: ConfigInfo):
+        """Generate classical wireguard config"""
+        me = config_info.me
+        peers = config_info.peers
+
+        listen_port = me.config.get("endpoint", "").partition(":")[-1] or None
+        interface_name = me.config.get("interface_name") or me.config.get("name", "wireguard")
+
+        config = generate_openwrt_interface_config(
+            name=me.config["name"],
+            interface_name=interface_name,
+            private_key=me.keys.private_key,
+            addresses=me.config["addresses"],
+            listen_port=listen_port)
+        config = config.strip() + "\n\n"
+
+        for peer in peers:
+            keepalive = get_keepalive(self.rules, me.config["type"])
+            config += generate_openwrt_peer_config(
+                name=peer.name,
+                interface_name=interface_name,
+                preshared_key=peer.keys.psk if peer.use_psk == True else None,
+                public_key=peer.keys.public_key, allowed_ips=peer.allowed_ips,
+                endpoint=peer.endpoint, keepalive=keepalive,
+                provides_routes=peer.provides_routes,
+                addresses=peer.addresses
+            )
+            config = config.strip() + "\n\n"
+
+        config = config.strip() + "\n"
+        # Write config to file
+        with open(os.path.join(self.openwrt_dir, f"{me.config['name']}.cfg"), "w") as outfile:
+            logger.msg("Exporting OpenWRT commands for", peer=me.config['name'])
             outfile.write(config)
 
     def generate_wg_config(self, config_info: ConfigInfo):
@@ -291,6 +354,7 @@ class WireguardConfigurator(object):
         os.makedirs(self.config_dir, exist_ok=True)
         os.makedirs(self.mikrotik_dir, exist_ok=True)
         os.makedirs(self.mobile_dir, exist_ok=True)
+        os.makedirs(self.openwrt_dir, exist_ok=True)
         peer_keyset = generate_or_load_peer_keys(self.config_name, self.peers)
 
         # Iterate peer for which we will export config
@@ -359,6 +423,7 @@ if __name__ == "__main__":
     for config in configs:
         wg.generate_wg_config(config)
         wg.generate_mikrotik_config(config)
+        wg.generate_openwrt_config(config)
         wg.generate_mobile_qr(config)
 
     if args.qr:
