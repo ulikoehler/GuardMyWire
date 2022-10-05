@@ -22,7 +22,7 @@
         {
             "name": "MyWireguardRouter",
             "endpoint": "my-dyndns-addr.domain.tld:22781",
-            "provides_routes": ["192.168.1.1/24"],
+            "provides_routes": ["192.168.1.0/24"],
             "addresses": [
                 "10.178.212.1/24"
             ],
