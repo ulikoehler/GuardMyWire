@@ -1,0 +1,54 @@
+{
+    "rules": {
+        "Mobile": {
+            "connect_to": ["Router"],
+            "IPv6": true,
+            "keepalive": 120
+        },
+        "Desktop": {
+            "connect_to": ["Router"],
+            "keepalive": 60 
+        },
+        "Notebook": {
+            "connect_to": ["Router"],
+            "keepalive": 30
+        },
+        "Router": {
+            "connect_to": ["*"],
+            "keepalive": 30
+        }
+    },
+    "peers": [
+        {
+            "name": "MyWireguardRouter",
+            "endpoint": "my-dyndns-addr.domain.tld:22781",
+            "provides_routes": ["192.168.1.1/24"],
+            "addresses": [
+                "10.178.212.1/24"
+            ],
+            "type": "Router",
+            "interface_name": "WGPointToMultipoint"
+        }, {
+            "name": "MyNotebook",
+            "addresses": [
+                "10.178.212.2/24"
+            ],
+            "type": "Notebook",
+            "interface_name": "WGPointToMultipoint"
+        }, {
+            "name": "MySecondNotebook",
+            "addresses": [
+                "10.178.212.3/24"
+            ],
+            "type": "Notebook",
+            "interface_name": "WGPointToMultipoint"
+        }, {
+            "name": "MyDesktop",
+            "addresses": [
+                "10.178.212.4/24"
+            ],
+            "type": "Desktop",
+            "interface_name": "WGPointToMultipoint"
+        }
+    ]
+}
