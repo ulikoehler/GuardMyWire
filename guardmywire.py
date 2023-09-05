@@ -218,6 +218,7 @@ class ConfigInfo(NamedTuple):
     peers: List[RemotePeerConfig]
 
 class WireguardConfigurator(object):
+    """Generates Wireguard configuration files for Mikrotik, OpenWRT and mobile clients"""
 
     def __init__(self, config_filename):
         self.config_filename = config_filename
@@ -342,8 +343,11 @@ class WireguardConfigurator(object):
         logger.info("Exporting mobile QR code for", peer=config_info.me.config['name'], png=png_filename)
         try:
             # -d is DPI of the generated PNG
-            subprocess.check_output(["qrencode", "-r", config_filename, "-o", png_filename, "-d", f"{72*4}"])
-            subprocess.check_output(["qrencode", "-r", config_filename, "-o", svg_filename, "-d", f"{72*4}", "-t", "svg"])
+            try:
+                subprocess.check_output(["qrencode", "-r", config_filename, "-o", png_filename, "-d", f"{72*4}"])
+                subprocess.check_output(["qrencode", "-r", config_filename, "-o", svg_filename, "-d", f"{72*4}", "-t", "svg"])
+            except subprocess.CalledProcessError as ex:
+                logger.error("Could not generate QR code", ex=ex)
         except FileNotFoundError as ex:
             logger.error("Could not find qrencode executable", ex=ex)
 
