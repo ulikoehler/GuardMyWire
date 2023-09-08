@@ -5,11 +5,36 @@ import os
 import ipaddress
 import json
 import argparse
+from invoke import run
 from typing import NamedTuple, List
 import structlog
+from io import StringIO
 from collections import namedtuple
 
 logger = structlog.get_logger()
+
+def generate_wireguard_private_key():
+    """
+    Generate a WireGuard private key
+    Requires that the 'wg' command is available on PATH
+    """
+    stdout_stream = StringIO()
+    result = run("wg genkey", out_stream=stdout_stream)
+    if not result.ok:
+        raise Exception("Could not generate WireGuard private key", result.stderr)
+    return stdout_stream.getvalue().strip()
+
+def wireguard_private_key_to_public_key(privkey):
+    """
+    Convert a WireGuard private key to a public key
+    Requires that the 'wg' command is available on PATH
+    """
+    privkeyIO = StringIO(privkey)
+    stdout_stream = StringIO()
+    result = run("wg pubkey", in_stream=privkeyIO, out_stream=stdout_stream)
+    if not result.ok:
+        raise Exception("Could not generate WireGuard public key", result.stderr)
+    return stdout_stream.getvalue().strip()
 
 def generate_wireguard_keys():
     """
@@ -17,8 +42,9 @@ def generate_wireguard_keys():
     Requires that the 'wg' command is available on PATH
     Returns (private_key, public_key), both strings
     """
-    privkey = subprocess.check_output("wg genkey", shell=True).decode("utf-8").strip()
-    pubkey = subprocess.check_output(f"echo -n '{privkey}' | wg pubkey", shell=True).decode("utf-8").strip()
+    privkey = generate_wireguard_private_key()
+    pubkey = wireguard_private_key_to_public_key(privkey)
+    
     return (privkey, pubkey)
 
 def generate_wireguard_psk():
