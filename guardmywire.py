@@ -5,36 +5,11 @@ import os
 import ipaddress
 import json
 import argparse
-from invoke import run
 from typing import NamedTuple, List
 import structlog
-from io import StringIO
 from collections import namedtuple
 
 logger = structlog.get_logger()
-
-def generate_wireguard_private_key():
-    """
-    Generate a WireGuard private key
-    Requires that the 'wg' command is available on PATH
-    """
-    stdout_stream = StringIO()
-    result = run("wg genkey", out_stream=stdout_stream)
-    if not result.ok:
-        raise Exception("Could not generate WireGuard private key", result.stderr)
-    return stdout_stream.getvalue().strip()
-
-def wireguard_private_key_to_public_key(privkey):
-    """
-    Convert a WireGuard private key to a public key
-    Requires that the 'wg' command is available on PATH
-    """
-    privkeyIO = StringIO(privkey)
-    stdout_stream = StringIO()
-    result = run("wg pubkey", in_stream=privkeyIO, out_stream=stdout_stream)
-    if not result.ok:
-        raise Exception("Could not generate WireGuard public key", result.stderr)
-    return stdout_stream.getvalue().strip()
 
 def generate_wireguard_keys():
     """
@@ -42,9 +17,8 @@ def generate_wireguard_keys():
     Requires that the 'wg' command is available on PATH
     Returns (private_key, public_key), both strings
     """
-    privkey = generate_wireguard_private_key()
-    pubkey = wireguard_private_key_to_public_key(privkey)
-    
+    privkey = subprocess.check_output("wg genkey", shell=True).decode("utf-8").strip()
+    pubkey = subprocess.check_output(f"echo '{privkey}' | wg pubkey", shell=True).decode("utf-8").strip()
     return (privkey, pubkey)
 
 def generate_wireguard_psk():
@@ -111,7 +85,11 @@ def generate_mikrotik_interface_config(name, private_key, addresses, interface_n
     for address in addresses:
         # TODO IPv6 addresses
         network = str(ipaddress.ip_network(address, strict=False).network_address)
-        cfg += f"/ip address add address={address} interface={interface_name} network={network}\n"
+        # If this is an IPv4 address, use /ip
+        if "." in address:
+            cfg += f"/ip address add address={address} interface={interface_name} network={network}\n"
+        else: # Assume its an IPv6 address
+            cfg += f"/ipv6 address add address={address} interface={interface_name}\n"
     return cfg
 
 def generate_openwrt_interface_config(name, private_key, addresses, interface_name, listen_port=None):
@@ -244,6 +222,7 @@ class ConfigInfo(NamedTuple):
     peers: List[RemotePeerConfig]
 
 class WireguardConfigurator(object):
+    """Generates Wireguard configuration files for Mikrotik, OpenWRT and mobile clients"""
 
     def __init__(self, config_filename):
         self.config_filename = config_filename
@@ -368,8 +347,11 @@ class WireguardConfigurator(object):
         logger.info("Exporting mobile QR code for", peer=config_info.me.config['name'], png=png_filename)
         try:
             # -d is DPI of the generated PNG
-            subprocess.check_output(["qrencode", "-r", config_filename, "-o", png_filename, "-d", f"{72*4}"])
-            subprocess.check_output(["qrencode", "-r", config_filename, "-o", svg_filename, "-d", f"{72*4}", "-t", "svg"])
+            try:
+                subprocess.check_output(["qrencode", "-r", config_filename, "-o", png_filename, "-d", f"{72*4}"])
+                subprocess.check_output(["qrencode", "-r", config_filename, "-o", svg_filename, "-d", f"{72*4}", "-t", "svg"])
+            except subprocess.CalledProcessError as ex:
+                logger.error("Could not generate QR code", ex=ex)
         except FileNotFoundError as ex:
             logger.error("Could not find qrencode executable", ex=ex)
 
