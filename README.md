@@ -5,7 +5,7 @@ Generate wireguard configs for Linux (wg-quick), OpenWRT and MikroTik devices
 
 Install the required dependencies using
 ```sh
-pip3 install -r requirements.txt
+pip install -r requirements.txt
 ```
 and just run the script in place.
 
