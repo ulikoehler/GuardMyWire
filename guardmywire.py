@@ -2,12 +2,14 @@
 import subprocess
 import os.path
 import os
+import shutil
+import sys
 import ipaddress
 import json
 import argparse
 from typing import NamedTuple, List
 import structlog
-from collections import namedtuple
+from collections import Counter
 
 logger = structlog.get_logger()
 
@@ -85,11 +87,7 @@ def generate_mikrotik_interface_config(name, private_key, addresses, interface_n
     for address in addresses:
         # TODO IPv6 addresses
         network = str(ipaddress.ip_network(address, strict=False).network_address)
-        # If this is an IPv4 address, use /ip
-        if "." in address:
-            cfg += f"/ip address add address={address} interface={interface_name} network={network}\n"
-        else: # Assume its an IPv6 address
-            cfg += f"/ipv6 address add address={address} interface={interface_name}\n"
+        cfg += f"/ip address add address={address} interface={interface_name} network={network}\n"
     return cfg
 
 def generate_openwrt_interface_config(name, private_key, addresses, interface_name, listen_port=None):
@@ -419,20 +417,455 @@ class WireguardConfigurator(object):
             # Processing for current peer is finished
             yield ConfigInfo(me_peer, peers=me_other_peers)
 
+def prompt_yes_no(question, default=False):
+    """Ask a yes/no question via input() and return True for yes."""
+    default_str = "Y/n" if default else "y/N"
+    try:
+        resp = input(f"{question} [{default_str}]: ").strip().lower()
+    except EOFError:
+        return default
+    if not resp:
+        return default
+    return resp in ("y", "yes")
+
+
+def rename_device(config_filename, old_name, new_name, yes=False, dry_run=False):
+    """Rename a device in the JSON config and associated files (keys/configs/images).
+
+    Prompts before overwriting unless yes==True. If dry_run is True, simulate actions and do not modify files.
+    """
+    # Load JSON
+    with open(config_filename) as f:
+        data = json.load(f)
+
+    peers = data.get("peers", [])
+    idx = next((i for i, p in enumerate(peers) if p.get("name") == old_name), None)
+    if idx is None:
+        print(f"Device '{old_name}' not found in {config_filename}.")
+        sys.exit(1)
+
+    # Check for conflicting name
+    existing_idx = next((i for i, p in enumerate(peers) if p.get("name") == new_name), None)
+    if existing_idx is not None and existing_idx != idx:
+        # If dry_run, we won't prompt interactively
+        if not yes and not dry_run and not prompt_yes_no(f"A device named '{new_name}' already exists in {config_filename}. Overwrite it?", default=False):
+            print("Aborted.")
+            sys.exit(1)
+        # Remove the existing entry to replace it (unless dry-run)
+        if dry_run:
+            print(f"Dry-run: would remove existing device entry '{new_name}' from JSON.")
+            if existing_idx < idx:
+                idx -= 1
+        else:
+            print(f"Removing existing device entry '{new_name}' from JSON.")
+            peers.pop(existing_idx)
+            if existing_idx < idx:
+                idx -= 1
+
+    cfg_base = os.path.splitext(config_filename)[0]
+    dirs = {
+        "keys": os.path.join(cfg_base, "keys"),
+        "config": os.path.join(cfg_base, "config"),
+        "mikrotik": os.path.join(cfg_base, "mikrotik"),
+        "openwrt": os.path.join(cfg_base, "openwrt"),
+        "mobile": os.path.join(cfg_base, "mobile"),
+    }
+
+    # Collect rename candidates
+    rename_actions = []  # tuples (old, new)
+
+    # Key files
+    for suffix in (".privkey", ".pubkey", ".psk"):
+        oldf = os.path.join(dirs["keys"], f"{old_name}{suffix}")
+        newf = os.path.join(dirs["keys"], f"{new_name}{suffix}")
+        if os.path.exists(oldf):
+            rename_actions.append((oldf, newf))
+
+    # Config files
+    for d, ext in (("config", ".conf"), ("mikrotik", ".mik"), ("openwrt", ".cfg")):
+        oldf = os.path.join(dirs[d], f"{old_name}{ext}")
+        newf = os.path.join(dirs[d], f"{new_name}{ext}")
+        if os.path.exists(oldf):
+            rename_actions.append((oldf, newf))
+
+    # Mobile images
+    for ext in (".png", ".svg"):
+        oldf = os.path.join(dirs["mobile"], f"{old_name}{ext}")
+        newf = os.path.join(dirs["mobile"], f"{new_name}{ext}")
+        if os.path.exists(oldf):
+            rename_actions.append((oldf, newf))
+
+    # Confirm if any destination exists
+    for _, newf in rename_actions:
+        if os.path.exists(newf) and not yes:
+            if dry_run:
+                print(f"Dry-run: target file '{newf}' already exists and would be overwritten.")
+            else:
+                if not prompt_yes_no(f"Target file '{newf}' already exists. Overwrite?", default=False):
+                    print("Aborted.")
+                    sys.exit(1)
+
+    # Perform renames (or simulate)
+    for oldf, newf in rename_actions:
+        os.makedirs(os.path.dirname(newf), exist_ok=True)
+        if dry_run:
+            print(f"Dry-run: would rename {oldf} -> {newf}")
+            continue
+        try:
+            shutil.move(oldf, newf)
+            print(f"Renamed {oldf} -> {newf}")
+        except Exception as e:
+            print(f"Failed to rename {oldf} -> {newf}: {e}")
+
+    # Update JSON
+    peers[idx]["name"] = new_name
+
+    if dry_run:
+        print(f"Dry-run: would write changes to {config_filename} (rename '{old_name}' -> '{new_name}').")
+        return
+
+    if not yes and not prompt_yes_no(f"Write changes to {config_filename}?", default=False):
+        print("Aborted.")
+        sys.exit(1)
+
+    with open(config_filename, "w") as f:
+        json.dump(data, f, indent=4)
+
+    print(f"Renamed device '{old_name}' -> '{new_name}' in {config_filename}.")
+
+
+# --- Helpers for allocation when adding devices ---
+
+def _collect_network_counters(peers):
+    """Return counters of networks used in addresses for IPv4 and IPv6."""
+    counters = {4: Counter(), 6: Counter()}
+    for p in peers:
+        for addr in p.get("addresses", []):
+            try:
+                net = ipaddress.ip_network(addr, strict=False)
+            except Exception:
+                continue
+            counters[net.version][str(net.with_prefixlen)] += 1
+    return counters
+
+
+def _select_most_common_network(counter):
+    """Given a Counter mapping network-with-prefix to counts, return an ip_network or None."""
+    if not counter:
+        return None
+    most, _ = counter.most_common(1)[0]
+    return ipaddress.ip_network(most, strict=False)
+
+
+def _next_host_in_network(network, peers):
+    """Find the first unused host IP in `network` given existing peers' addresses."""
+    used = set()
+    for p in peers:
+        for addr in p.get("addresses", []):
+            try:
+                ip = ipaddress.ip_interface(addr).ip
+            except Exception:
+                continue
+            if ip in network:
+                used.add(int(ip))
+    for host in network.hosts():
+        if int(host) not in used:
+            return f"{host}/{network.prefixlen}"
+    return None
+
+
+def _next_subnet_for_routes(peers):
+    """Compute the next available subnet for provides_routes based on existing entries.
+
+    Returns a string like '10.56.50.0/24' or None if not determinable.
+    """
+    routes = []
+    for p in peers:
+        for r in p.get("provides_routes", []):
+            try:
+                routes.append(ipaddress.ip_network(r, strict=False))
+            except Exception:
+                continue
+    if not routes:
+        return None
+    # Choose most common prefixlen
+    prefix_counter = Counter(r.prefixlen for r in routes)
+    chosen_prefix = prefix_counter.most_common(1)[0][0]
+    candidates = [r for r in routes if r.prefixlen == chosen_prefix]
+    rep = candidates[0]
+    # Find smallest supernet (closest to rep) that contains all candidates
+    supernet = None
+    for new_pref in range(rep.prefixlen - 1, -1, -1):
+        try:
+            cand = rep.supernet(new_prefix=new_pref)
+        except Exception:
+            continue
+        if all(c.subnet_of(cand) for c in candidates):
+            supernet = cand
+            break
+    if supernet is None:
+        # fallback: use rep's supernet of size prefixlen-8 or the rep's immediate supernet
+        try:
+            supernet = rep.supernet(new_prefix=max(rep.prefixlen - 8, 0))
+        except Exception:
+            supernet = rep.supernet()
+
+    # List subnets of the supernet with prefix chosen_prefix and find first unused
+    used_set = set(str(r) for r in routes if r.prefixlen == chosen_prefix)
+    for s in supernet.subnets(new_prefix=chosen_prefix):
+        if str(s) not in used_set:
+            return str(s)
+    return None
+
+
+def add_device(config_filename, name, type="Client", interface_name=None, addresses=None, provides_routes=None, yes=False, dry_run=False):
+    """Add a new device to the JSON config with auto-assigned addresses and routes.
+
+    Addresses or provides_routes passed explicitly (including an empty list) are used as-is.
+    Auto-assignment only occurs when the corresponding argument is *None*.
+    In particular, passing an empty ``provides_routes`` list disables route assignment.
+
+    Prompts for confirmation (unless yes=True). Respects dry_run.
+    """
+    with open(config_filename, "r") as f:
+        data = json.load(f)
+
+    peers = data.setdefault("peers", [])
+    existing_idx = next((i for i, p in enumerate(peers) if p.get("name") == name), None)
+
+    if existing_idx is not None:
+        if not yes and not prompt_yes_no(f"A device named '{name}' already exists. Overwrite it?", default=False):
+            print("Aborted.")
+            return
+
+    # Auto compute addresses if not provided
+    allocated_addresses = [] if addresses is None else list(addresses)
+    counters = _collect_network_counters(peers)
+    for ver in (4, 6):
+        if addresses is not None and any((ipaddress.ip_network(a, strict=False).version == ver) for a in addresses):
+            continue
+        net = _select_most_common_network(counters[ver])
+        if net is None:
+            continue
+        nh = _next_host_in_network(net, peers)
+        if nh:
+            allocated_addresses.append(nh)
+
+    # Auto compute provides_routes only when the caller explicitly left it as None.
+    # An empty list (``provides_routes`` == []) is treated as a deliberate request for
+    # no routes and therefore no auto-assignment.
+    allocated_routes = [] if provides_routes is None else list(provides_routes)
+    if provides_routes is None:
+        nr = _next_subnet_for_routes(peers)
+        if nr:
+            allocated_routes.append(nr)
+
+    # construct new peer entry; omit provides_routes if empty to keep JSON clean
+    new_peer = {
+        "name": name,
+        "addresses": allocated_addresses,
+        "type": type,
+    }
+    if allocated_routes:
+        new_peer["provides_routes"] = allocated_routes
+    if interface_name:
+        new_peer["interface_name"] = interface_name
+
+    # Show summary and prompt
+    print("New peer to add:")
+    print(json.dumps(new_peer, indent=4, ensure_ascii=False))
+
+    if not yes and not prompt_yes_no("Add this peer to the config?", default=False):
+        print("Aborted.")
+        return
+
+    if dry_run:
+        print("Dry-run: would append peer to the file but not write anything.")
+        return
+
+    # Append or replace existing
+    if existing_idx is not None:
+        peers[existing_idx] = new_peer
+    else:
+        peers.append(new_peer)
+
+    # Write and format
+    try:
+        with open(config_filename, "w") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+            f.write("\n")
+    except Exception as e:
+        print(f"Failed to write '{config_filename}': {e}")
+        sys.exit(1)
+
+    # Ensure formatted (no prompt)
+    format_json(config_filename, indent=4, yes=True, dry_run=False)
+
+    print(f"Added peer '{name}' to {config_filename}.")
+
+
+def format_json(config_filename, indent=4, yes=False, dry_run=False):
+    """Pretty-format the JSON file with the requested indentation.
+
+    If dry_run is True, print what would change but do not write.
+    """
+    # Read file
+    try:
+        with open(config_filename, "r") as f:
+            orig = f.read()
+    except Exception as e:
+        print(f"Could not read '{config_filename}': {e}")
+        sys.exit(1)
+
+    try:
+        data = json.loads(orig)
+    except Exception as e:
+        print(f"Could not parse JSON in '{config_filename}': {e}")
+        sys.exit(1)
+
+    new = json.dumps(data, indent=indent, ensure_ascii=False) + "\n"
+
+    if new == orig:
+        print(f"'{config_filename}' is already formatted (indent={indent}).")
+        return
+
+    if dry_run:
+        print(f"Dry-run: would reformat '{config_filename}' (was {len(orig)} bytes, would be {len(new)} bytes)")
+        return
+
+    if not yes and not prompt_yes_no(f"Write formatted JSON to {config_filename}? (was {len(orig)} bytes, would be {len(new)} bytes)", default=False):
+        print("Aborted.")
+        sys.exit(1)
+
+    try:
+        with open(config_filename, "w") as f:
+            f.write(new)
+    except Exception as e:
+        print(f"Failed to write '{config_filename}': {e}")
+        sys.exit(1)
+
+    print(f"Wrote formatted JSON to {config_filename} (indent={indent}).")
+
+
+def list_clients(config_filename, all_types=False):
+    """List clients in compact one-line format with aligned columns: name, addresses, provides_routes"""
+    try:
+        with open(config_filename) as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"Could not read '{config_filename}': {e}")
+        sys.exit(1)
+
+    peers = data.get("peers", [])
+    rows = []
+    for p in peers:
+        if p.get("disabled"):
+            continue
+        if not all_types and p.get("type") != "Client":
+            continue
+        name = p.get("name")
+        addresses = p.get("addresses", [])
+        provides_routes = p.get("provides_routes", [])
+        addr_str = ",".join(addresses) if addresses else '(none)'
+        routes_str = ",".join(provides_routes) if provides_routes else '(none)'
+        rows.append((name, addr_str, routes_str))
+
+    if not rows:
+        return
+
+    max_name = max(len(r[0]) for r in rows)
+    max_addr = max(len(r[1]) for r in rows)
+
+    for name, addr_str, routes_str in rows:
+        print(f"{name.ljust(max_name)}  addresses:{addr_str.ljust(max_addr)}  provides_routes:{routes_str}")
+
+
 if __name__ == "__main__":
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("config", help="The config file to use")
-    parser.add_argument("-q", "--qr", action="store_true", help="Generate QR codes for configs")
-    parser.add_argument("-m", "--mikrotik", action="store_true")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # generate subcommand (default behaviour)
+    genp = subparsers.add_parser("generate", help="Generate configurations from a JSON file")
+    genp.add_argument("config", help="The config file to use")
+    genp.add_argument("-q", "--qr", action="store_true", help="Generate QR codes for configs")
+    genp.add_argument("-m", "--mikrotik", action="store_true")
+
+    # rename subcommand
+    renp = subparsers.add_parser("rename", help="Rename a device in the JSON config and associated files")
+    renp.add_argument("config", help="The config file to modify")
+    renp.add_argument("old_name", help="Current device name")
+    renp.add_argument("new_name", help="New device name")
+    renp.add_argument("-y", "--yes", action="store_true", help="Assume yes for all prompts")
+    renp.add_argument("-n", "--dry-run", action="store_true", help="Preview renames without making changes")
+
+    fmtp = subparsers.add_parser("format", help="Pretty-format a JSON config file")
+    fmtp.add_argument("config", help="The config file to format")
+    fmtp.add_argument("-i", "--indent", type=int, default=4, help="Indentation spaces (default: 4)")
+    fmtp.add_argument("-y", "--yes", action="store_true", help="Assume yes for all prompts")
+    fmtp.add_argument("-n", "--dry-run", action="store_true", dest="dry_run", help="Preview formatting without writing")
+
+    # add subcommand
+    addp = subparsers.add_parser("add", help="Add a new device to the JSON config")
+    addp.add_argument("config", help="The config file to modify")
+    addp.add_argument("name", help="Name of the device to add")
+    addp.add_argument("-t", "--type", default="Client", help="Device type (Router/Client)")
+    addp.add_argument("-I", "--interface-name", dest="interface_name", help="Interface name")
+    addp.add_argument("--addresses", nargs="+", help="Explicit addresses (with CIDR). If omitted, auto-assigns next address(es)")
+    addp.add_argument("--provides-routes", nargs="*", dest="provides_routes",
+        help="Explicit provides_routes. If omitted, no routes will be added.\n"
+             "The option may be given with no values to also request none.\n"
+             "Auto-assignment occurs only when running the helper function directly with ``provides_routes=None``.")
+    addp.add_argument("-y", "--yes", action="store_true", help="Assume yes for all prompts")
+    addp.add_argument("-n", "--dry-run", action="store_true", dest="dry_run", help="Preview changes without writing")
+
+    listp = subparsers.add_parser("list", help="List clients with their addresses and provided routes")
+    listp.add_argument("config", help="The config file to use")
+    listp.add_argument("-a", "--all", action="store_true", help="Include all device types (not only Clients)")
+
     args = parser.parse_args()
 
-    wg = WireguardConfigurator(args.config)
-    configs = list(wg.generate_configs())
-    for config in configs:
-        wg.generate_wg_config(config)
-        wg.generate_mikrotik_config(config)
-        wg.generate_openwrt_config(config)
-        wg.generate_mobile_qr(config)
+    # If no subcommand was provided, interpret the remaining argv as arguments for 'generate'
+    # This ensures attributes like `config` are present on `args` (avoids AttributeError).
+    if args.command is None:
+        gen_args = genp.parse_args(sys.argv[1:])
+        gen_args.command = "generate"
+        args = gen_args
 
-    if args.qr:
-        subprocess.Popen(f"qrencode -t ansiutf8 < config/{args.qr}.conf", shell=True)
+    if args.command == "generate":
+        wg = WireguardConfigurator(args.config)
+        configs = list(wg.generate_configs())
+        for config in configs:
+            wg.generate_wg_config(config)
+            wg.generate_mikrotik_config(config)
+            wg.generate_openwrt_config(config)
+            wg.generate_mobile_qr(config)
+
+        if getattr(args, "qr", False):
+            # This line preserves existing behaviour, possibly intended to show a specific config QR
+            subprocess.Popen(f"qrencode -t ansiutf8 < config/{args.qr}.conf", shell=True)
+    elif args.command == "rename":
+        rename_device(args.config, args.old_name, args.new_name, yes=args.yes, dry_run=getattr(args, "dry_run", False))
+    elif args.command == "format":
+        format_json(args.config, indent=getattr(args, "indent", 4), yes=args.yes, dry_run=getattr(args, "dry_run", False))
+    elif args.command == "add":
+        # CLI should never auto-assign routes when the user does not mention
+        # ``--provides-routes`` at all.  The parser returns ``None`` in that
+        # case, so convert to an explicit empty list here.  (Direct calls to
+        # ``add_device`` may still pass ``None`` in order to trigger the
+        # original auto-assignment behaviour.)
+        pr = getattr(args, "provides_routes", None)
+        if pr is None:
+            pr = []
+        add_device(
+            args.config,
+            args.name,
+            type=getattr(args, "type", "Client"),
+            interface_name=getattr(args, "interface_name", None),
+            addresses=getattr(args, "addresses", None),
+            provides_routes=pr,
+            yes=args.yes,
+            dry_run=getattr(args, "dry_run", False),
+        )
+    elif args.command == "list":
+        list_clients(args.config, all_types=getattr(args, "all", False))
