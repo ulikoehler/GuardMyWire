@@ -1,6 +1,5 @@
 """Tests for pure helper functions: is_ipv6, is_reachable, is_any_reachable,
 should_connect_to, get_keepalive, key_filenames."""
-import itertools
 import os
 import pytest
 
