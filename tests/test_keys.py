@@ -1,9 +1,7 @@
 """Tests for key management: load_keys, generate_and_save_keys,
 generate_or_load_peer_keys, and the KeySet NamedTuple."""
 import os
-import tempfile
-import shutil
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -19,7 +17,6 @@ from guardmywire import (
 from tests.conftest import (
     FAKE_PRIVKEY, FAKE_PUBKEY, FAKE_PSK,
     FAKE_PRIVKEY2, FAKE_PUBKEY2, FAKE_PSK2,
-    FAKE_PRIVKEY3, FAKE_PUBKEY3, FAKE_PSK3,
     create_fake_keys,
 )
 
