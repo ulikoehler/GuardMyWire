@@ -1,19 +1,11 @@
 """Integration tests using the actual example configs from the repository.
 Tests end-to-end generation with PointToMultipoint and Site2Site configs."""
-import json
 import os
-from unittest.mock import patch
 
 import pytest
 
 from guardmywire import (
     WireguardConfigurator,
-    generate_interface_config,
-    generate_peer_config,
-    generate_mikrotik_interface_config,
-    generate_mikrotik_peer_config,
-    generate_openwrt_interface_config,
-    generate_openwrt_peer_config,
     get_keepalive,
     should_connect_to,
     is_reachable,
