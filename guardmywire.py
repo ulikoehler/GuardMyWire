@@ -161,6 +161,9 @@ def generate_or_load_peer_keys(config_name, peers):
     return peer_keyset
 
 def get_keepalive(rules, type):
+    if type not in rules:
+        logger.warning("Unknown type in get_keepalive", type=type)
+        return 30
     return rules[type].get("keepalive", 30)
 
 def is_reachable(peer):
@@ -188,6 +191,9 @@ def should_connect_to(rules, our_type, peer_type):
     Return true if a peer of type our_type should connect to
     based on the config connection rul
     """
+    if our_type not in rules:
+        logger.warning("Unknown type in should_connect_to", our_type=our_type, peer_type=peer_type)
+        return False
     rule = rules[our_type].get("connect_to", ["*"])
     return ("*" in rule) or (peer_type in rule)
 
@@ -368,6 +374,9 @@ class WireguardConfigurator(object):
             if me.get("disabled") == True:
                 continue
             me_type = me["type"]
+            if me_type not in self.rules:
+                logger.warning("Skipping peer with unknown type", peer=me.get("name"), type=me_type)
+                continue
             me_keys = peer_keyset[me["name"]]
 
             me_peer = SelfConfig(config=me, keys=me_keys)
@@ -378,6 +387,9 @@ class WireguardConfigurator(object):
             for other_peer in self.peers:
                 # Ignore self
                 if other_peer == me:
+                    continue
+                # Skip disabled peers
+                if other_peer.get("disabled", False):
                     continue
                 # Check if we should connect to the peer or the peer should connect to us
                 # For example, mobile phones should not connect to other mobile phones
@@ -618,7 +630,7 @@ def _next_subnet_for_routes(peers):
     return None
 
 
-def add_device(config_filename, name, type="Client", interface_name=None, addresses=None, provides_routes=None, yes=False, dry_run=False):
+def add_device(config_filename, name, type=None, interface_name=None, addresses=None, provides_routes=None, yes=False, dry_run=False):
     """Add a new device to the JSON config with auto-assigned addresses and routes.
 
     Addresses or provides_routes passed explicitly (including an empty list) are used as-is.
@@ -629,6 +641,19 @@ def add_device(config_filename, name, type="Client", interface_name=None, addres
     """
     with open(config_filename, "r") as f:
         data = json.load(f)
+
+    rules = data.get("rules", {})
+    if type is None:
+        if rules:
+            type = list(rules.keys())[-1]
+            print(f"Type not provided; using default '{type}' from end of rules list.")
+        else:
+            type = "Client"
+            print("Type not provided and no rules found; falling back to 'Client'.")
+
+    if type not in rules:
+        print(f"Error: type '{type}' is not defined in rules ({', '.join(rules.keys())}).")
+        sys.exit(1)
 
     peers = data.setdefault("peers", [])
     existing_idx = next((i for i, p in enumerate(peers) if p.get("name") == name), None)
@@ -809,7 +834,7 @@ if __name__ == "__main__":
     addp = subparsers.add_parser("add", help="Add a new device to the JSON config")
     addp.add_argument("config", help="The config file to modify")
     addp.add_argument("name", help="Name of the device to add")
-    addp.add_argument("-t", "--type", default="Client", help="Device type (Router/Client)")
+    addp.add_argument("-t", "--type", default=None, help="Device type (uses last item from rules by default)")
     addp.add_argument("-I", "--interface-name", dest="interface_name", help="Interface name")
     addp.add_argument("--addresses", nargs="+", help="Explicit addresses (with CIDR). If omitted, auto-assigns next address(es)")
     addp.add_argument("--provides-routes", nargs="*", dest="provides_routes",
