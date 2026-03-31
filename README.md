@@ -75,4 +75,13 @@ Output directories (created alongside the JSON file base name):
 * It will generate missing key pairs on demand and reuse existing ones.
 * The `add` helper tries to pick sensible IPs based on networks already in use.
 
+### Recommended gitignore
+
+```
+**/config
+**/mikrotik
+**/mobile
+**/openwrt
+```
+
 Feel free to read the source for more details about the configuration format and rules.
